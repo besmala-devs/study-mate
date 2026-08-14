@@ -1,13 +1,50 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../app/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// MVP: single implicit user. real auth (NextAuth) will be added once the core flow works.
+model Document {
+  id        String    @id @default(cuid())
+  title     String
+  createdAt DateTime  @default(now())
+  chunks    Chunk[]
+  flashcards Flashcard[]
+}
+
+// A chunk of a document's text, plus its embedding vector for RAG retrieval.
+// Stored as a plain float array so no pgvector extension is required to get started.
+model Chunk {
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  content    String
+  embedding  Float[]
+  chunkIndex Int
+  createdAt  DateTime @default(now())
+
+  @@index([documentId])
+}
+
+model Flashcard {
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  question   String
+  answer     String
+
+  // Simplified SM-2 spaced repetition state
+  repetition   Int      @default(0)
+  easeFactor   Float    @default(2.5)
+  intervalDays Int      @default(0)
+  dueAt        DateTime @default(now())
+
+  createdAt DateTime @default(now())
+
+  @@index([documentId])
+  @@index([dueAt])
 }
