@@ -2,10 +2,10 @@ import { NextResponse } from "next/server";
 import { chunkText } from "@/lib/chunk";
 import { embedBatch } from "@/lib/embeddings";
 import { prisma } from "@/lib/prisma";
+const pdfParse = require("pdf-parse");
 
 /**
  * GET /api/documents
- * Fetches all saved documents from the database.
  */
 export async function GET() {
   try {
@@ -16,7 +16,7 @@ export async function GET() {
         title: true,
         createdAt: true,
         _count: {
-          select: { chunks: true },
+          select: { chunks: true, flashcards: true },
         },
       },
     });
@@ -24,35 +24,52 @@ export async function GET() {
     return NextResponse.json(documents);
   } catch (error: any) {
     console.error("Failed to fetch documents:", error);
-    return NextResponse.json(
-      { error: error.message || "Failed to fetch documents" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
 /**
  * POST /api/documents
- * Processes a new document (chunks it, embeds it, and saves it to DB).
+ * Handles FormData uploads containing PDF or TXT files.
  */
 export async function POST(req: Request) {
   try {
-    const { title, text } = await req.json();
+    const formData = await req.formData();
+    const file = formData.get("file") as File | null;
 
-    if (!text || text.trim().length === 0) {
-      return NextResponse.json({ error: "Document text is empty." }, { status: 400 });
+    if (!file) {
+      return NextResponse.json({ error: "No file was provided in the upload request." }, { status: 400 });
     }
 
-    // 1. Break text into chunks
-    const rawChunks = chunkText(text, 800, 150);
+    // 1. Extract text depending on file type (.pdf vs .txt)
+    let extractedText = "";
+    const bytes = await file.arrayBuffer();
+    const buffer = Buffer.from(bytes);
 
-    // 2. Generate vector embeddings in safe batches
+    if (file.name.endsWith(".pdf")) {
+      const pdfData = await pdfParse(buffer);
+      extractedText = pdfData.text;
+    } else {
+      extractedText = buffer.toString("utf-8");
+    }
+
+    if (!extractedText || extractedText.trim().length === 0) {
+      return NextResponse.json(
+        { error: "Could not extract text. The file may be empty or an image-only PDF." },
+        { status: 400 }
+      );
+    }
+
+    // 2. Chunk text into overlapping segments
+    const rawChunks = chunkText(extractedText, 800, 150);
+
+    // 3. Generate embeddings in safe batches
     const embeddings = await embedBatch(rawChunks, 10);
 
-    // 3. Save document and chunks to Prisma
+    // 4. Save Document & Chunks in Prisma
     const document = await prisma.document.create({
       data: {
-        title: title || "Untitled PDF",
+        title: file.name,
         chunks: {
           createMany: {
             data: rawChunks.map((content, index) => ({
@@ -71,7 +88,7 @@ export async function POST(req: Request) {
       totalChunks: rawChunks.length,
     });
   } catch (error: any) {
-    console.error("Failed to process document:", error);
+    console.error("Failed to process document upload:", error);
     return NextResponse.json(
       { error: error.message || "Server Error" },
       { status: 500 }

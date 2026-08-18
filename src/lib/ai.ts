@@ -1,61 +1,108 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 
-// Updated from deprecated gemini-2.5-flash
-const MODEL = "gemini-3.5-flash";
+const apiKey = process.env.GOOGLE_API_KEY;
+if (!apiKey) {
+  throw new Error("GOOGLE_API_KEY environment variable is required.");
+}
 
-export type GeneratedFlashcard = { question: string; answer: string };
+const ai = new GoogleGenAI({ apiKey });
+
+// Active Google GenAI models
+const MODELS_TO_TRY = [
+  "gemini-3.6-flash",
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+];
 
 /**
- * Ask Gemini to turn a chunk of study material into flashcards.
+ * Generic helper with retry and model fallback logic.
  */
-export async function generateFlashcards(
-  sourceText: string,
-  count = 5
-): Promise<GeneratedFlashcard[]> {
-  const model = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!).getGenerativeModel({
-    model: MODEL,
-    systemInstruction:
-      "You are a study assistant. Given source material, produce concise flashcards " +
-      "that test understanding, not just recall of exact wording. " +
-      "Respond with ONLY a JSON array, no markdown fences, no preamble. " +
-      'Format: [{"question": "...", "answer": "..."}]',
-    generationConfig: { responseMimeType: "application/json" },
-  });
+async function generateContentWithFallback(
+  prompt: string,
+  systemInstruction?: string
+): Promise<string> {
+  let lastError: any = null;
 
-  const result = await model.generateContent(
-    `Create ${count} flashcards from this material:\n\n${sourceText}`
-  );
+  for (const modelName of MODELS_TO_TRY) {
+    let retries = 2;
+    let delay = 1000;
 
-  const raw = result.response.text();
+    while (retries >= 0) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: prompt,
+          config: systemInstruction
+            ? { systemInstruction }
+            : undefined,
+        });
 
-  try {
-    return JSON.parse(raw.trim());
-  } catch {
-    // Strip markdown code block fences if present and retry
-    const cleaned = raw.replace(/```json|```/g, "").trim();
-    return JSON.parse(cleaned);
+        if (response.text) {
+          return response.text;
+        }
+      } catch (error: any) {
+        lastError = error;
+        console.warn(`[${modelName}] Attempt failed (${error?.message || error}).`);
+
+        // Only retry if it's a rate limit or server busy error (not a 404 bad model name)
+        if (error?.status === 404 || error?.message?.includes("404")) {
+          break; // Immediately jump to the next model in MODELS_TO_TRY
+        }
+
+        if (retries > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          delay *= 2; // Exponential backoff
+          retries--;
+        } else {
+          break;
+        }
+      }
+    }
   }
+
+  throw new Error(
+    `All AI models failed or are busy. Details: ${lastError?.message || "Unknown error"}`
+  );
 }
 
 /**
- * Answer a question using ONLY the retrieved chunks as context (RAG).
+ * Generates structured study flashcards from text.
+ */
+export async function generateFlashcards(
+  sourceText: string,
+  count = 8
+): Promise<{ question: string; answer: string }[]> {
+  const systemInstruction =
+    "You are an educational assistant that generates high-quality study flashcards. " +
+    "You MUST respond ONLY with a valid JSON array of objects, where each object has 'question' and 'answer' properties. " +
+    "Do NOT include markdown formatting or backticks around the JSON output.";
+
+  const prompt = `Generate exactly ${count} clear flashcards based on the following text:\n\n${sourceText}`;
+
+  const rawResult = await generateContentWithFallback(prompt, systemInstruction);
+
+  // Clean JSON response if model wraps output in markdown fences
+  const cleanedJson = rawResult
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  return JSON.parse(cleanedJson);
+}
+
+/**
+ * Answers questions based ONLY on supplied document context chunks.
  */
 export async function answerFromContext(
-  question: string,
-  contextChunks: string[]
+  context: string,
+  question: string
 ): Promise<string> {
-  const context = contextChunks.map((c, i) => `[Excerpt ${i + 1}]\n${c}`).join("\n\n");
+  const systemInstruction =
+    "You are a helpful study assistant. Answer the user's question accurately using ONLY the provided context material. " +
+    "If the answer cannot be found in the context, explicitly state that the material does not contain enough information.";
 
-  const model = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!).getGenerativeModel({
-    model: MODEL,
-    systemInstruction:
-      "Answer the user's question using ONLY the excerpts provided below. " +
-      "If the excerpts don't contain the answer, say so explicitly rather than guessing.",
-  });
+  const prompt = `Context material:\n${context}\n\nQuestion: ${question}`;
 
-  const result = await model.generateContent(
-    `Excerpts from my notes:\n\n${context}\n\nQuestion: ${question}`
-  );
-
-  return result.response.text();
+  return await generateContentWithFallback(prompt, systemInstruction);
 }
