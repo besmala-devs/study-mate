@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
+import { extractText } from "unpdf";
 import { chunkText } from "@/lib/chunk";
 import { embedBatch } from "@/lib/embeddings";
 import { prisma } from "@/lib/prisma";
-const pdfParse = require("pdf-parse");
+
+// Helper function to strip null bytes and invalid UTF-8 control characters
+function sanitizeText(text: string): string {
+  return text
+    .replace(/\u0000/g, "") // Remove NULL bytes (0x00)
+    .replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F]/g, ""); // Remove non-printable ASCII control chars
+}
 
 /**
  * GET /api/documents
@@ -30,7 +37,6 @@ export async function GET() {
 
 /**
  * POST /api/documents
- * Handles FormData uploads containing PDF or TXT files.
  */
 export async function POST(req: Request) {
   try {
@@ -38,18 +44,22 @@ export async function POST(req: Request) {
     const file = formData.get("file") as File | null;
 
     if (!file) {
-      return NextResponse.json({ error: "No file was provided in the upload request." }, { status: 400 });
+      return NextResponse.json(
+        { error: "No file was provided in the upload request." },
+        { status: 400 }
+      );
     }
 
     // 1. Extract text depending on file type (.pdf vs .txt)
     let extractedText = "";
     const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
 
-    if (file.name.endsWith(".pdf")) {
-      const pdfData = await pdfParse(buffer);
-      extractedText = pdfData.text;
+    if (file.name.toLowerCase().endsWith(".pdf")) {
+      // unpdf accepts Uint8Array directly
+      const { text } = await extractText(new Uint8Array(bytes));
+      extractedText = Array.isArray(text) ? text.join("\n") : text;
     } else {
+      const buffer = Buffer.from(bytes);
       extractedText = buffer.toString("utf-8");
     }
 
@@ -61,10 +71,10 @@ export async function POST(req: Request) {
     }
 
     // 2. Chunk text into overlapping segments
-    const rawChunks = chunkText(extractedText, 800, 150);
+    const rawChunks = chunkText(extractedText, 1500, 200);
 
     // 3. Generate embeddings in safe batches
-    const embeddings = await embedBatch(rawChunks, 10);
+    const embeddings = await embedBatch(rawChunks);
 
     // 4. Save Document & Chunks in Prisma
     const document = await prisma.document.create({

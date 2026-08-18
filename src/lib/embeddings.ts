@@ -1,116 +1,155 @@
 import { GoogleGenAI } from "@google/genai";
 
-const apiKey = process.env.GOOGLE_API_KEY;
-if (!apiKey) {
-  throw new Error("GOOGLE_API_KEY environment variable is required.");
-}
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY });
 
-const ai = new GoogleGenAI({ apiKey });
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Active Google GenAI embedding model identifier
-const EMBEDDING_MODEL = "gemini-embedding-001";
+// Candidate models to test
+const CANDIDATE_MODELS = [
+  "gemini-embedding-001",
+  "text-embedding-004",
+  "embedding-001",
+];
+
+let cachedWorkingModel: string | null = null;
 
 /**
- * Embeds a single string into a vector representation.
+ * Executes the embedContent API call for a given model name and text chunk
  */
-export async function embedText(text: string): Promise<number[]> {
-  try {
-    const response = await ai.models.embedContent({
-      model: EMBEDDING_MODEL,
-      contents: text,
-    });
+async function callEmbedApi(modelName: string, text: string): Promise<number[]> {
+  const response = await ai.models.embedContent({
+    model: modelName,
+    contents: text,
+  });
 
-    const values = response.embeddings?.[0]?.values;
-    if (!values) {
-      throw new Error("No embedding values returned from Google GenAI API.");
-    }
-
-    return values;
-  } catch (error) {
-    console.error("Error generating text embedding:", error);
-    throw error;
+  const values = response.embeddings?.[0]?.values;
+  if (!values || values.length === 0) {
+    throw new Error(`Model '${modelName}' returned empty embedding values.`);
   }
+
+  return values;
 }
 
 /**
- * Embeds multiple text chunks safely in small batches to avoid API rate limits.
+ * Dynamically queries Google's API to find any model supporting 'embedContent'
+ */
+async function discoverEmbeddingModel(): Promise<string> {
+  try {
+    console.log("Auto-discovering supported embedding models for your API key...");
+    const modelsResponse = await ai.models.list();
+
+    for await (const model of modelsResponse) {
+      if (!model.name) continue;
+
+      const name = model.name.replace(/^models\//, "");
+      const methods: string[] =
+        (model as any).supportedGenerationMethods ||
+        (model as any).supportedActions ||
+        [];
+
+      if (methods.includes("embedContent") || name.includes("embed")) {
+        console.log(`Discovered supported embedding model: ${name}`);
+        return name;
+      }
+    }
+  } catch (err: any) {
+    console.warn("Could not list models dynamically:", err?.message || err);
+  }
+
+  return "text-embedding-004";
+}
+
+/**
+ * Generates an embedding for a single text chunk with model discovery and rate-limit backoff.
+ */
+export async function embedText(
+  text: string,
+  retries = 3,
+  backoffMs = 2000
+): Promise<number[]> {
+  // 1. Use cached working model if already discovered
+  if (cachedWorkingModel) {
+    try {
+      return await callEmbedApi(cachedWorkingModel, text);
+    } catch (error: any) {
+      const isRateLimit =
+        error?.status === 429 ||
+        error?.message?.includes("429") ||
+        error?.message?.includes("RESOURCE_EXHAUSTED");
+
+      if (isRateLimit && retries > 0) {
+        console.warn(
+          `Rate limit hit (429) for '${cachedWorkingModel}'. Retrying in ${backoffMs / 1000}s... (${retries} retries left)`
+        );
+        await delay(backoffMs);
+        return embedText(text, retries - 1, backoffMs * 2);
+      }
+
+      // Clear cache on non-429 error and allow fallbacks
+      cachedWorkingModel = null;
+    }
+  }
+
+  // 2. Try candidate models list first
+  for (const modelName of CANDIDATE_MODELS) {
+    try {
+      console.log(`Testing embedding model: ${modelName}...`);
+      const values = await callEmbedApi(modelName, text);
+
+      cachedWorkingModel = modelName;
+      console.log(`Successfully locked onto embedding model: ${modelName}`);
+      return values;
+    } catch (error: any) {
+      const isNotFound =
+        error?.status === 404 ||
+        error?.message?.includes("404") ||
+        error?.message?.includes("NOT_FOUND");
+
+      if (isNotFound) {
+        console.warn(`Model '${modelName}' 404 not found. Trying next candidate...`);
+        continue;
+      }
+
+      const isRateLimit =
+        error?.status === 429 ||
+        error?.message?.includes("429") ||
+        error?.message?.includes("RESOURCE_EXHAUSTED");
+
+      if (isRateLimit && retries > 0) {
+        console.warn(
+          `Rate limit hit (429) while testing '${modelName}'. Retrying in ${backoffMs / 1000}s...`
+        );
+        await delay(backoffMs);
+        return embedText(text, retries - 1, backoffMs * 2);
+      }
+    }
+  }
+
+  // 3. Fallback: Dynamic discovery via API
+  const discoveredModel = await discoverEmbeddingModel();
+  cachedWorkingModel = discoveredModel;
+  return await callEmbedApi(discoveredModel, text);
+}
+
+/**
+ * Sequentially embeds chunks with a 700ms delay between requests to stay under rate limits.
  */
 export async function embedBatch(
-  texts: string[],
-  batchSize = 10
+  chunks: string[],
+  delayMsBetweenRequests = 700
 ): Promise<number[][]> {
-  if (texts.length === 0) return [];
-
   const embeddings: number[][] = [];
 
-  for (let i = 0; i < texts.length; i += batchSize) {
-    const batch = texts.slice(i, i + batchSize);
+  for (let i = 0; i < chunks.length; i++) {
+    console.log(`Generating embedding for chunk ${i + 1}/${chunks.length}...`);
 
-    const batchResults = await Promise.all(
-      batch.map((text) =>
-        ai.models.embedContent({
-          model: EMBEDDING_MODEL,
-          contents: text,
-        })
-      )
-    );
+    const embedding = await embedText(chunks[i]);
+    embeddings.push(embedding);
 
-    for (const res of batchResults) {
-      const values = res.embeddings?.[0]?.values;
-      if (!values) {
-        throw new Error("Missing values in embedding batch result item.");
-      }
-      embeddings.push(values);
-    }
-
-    // Small delay between batches to respect rate limits
-    if (i + batchSize < texts.length) {
-      await new Promise((resolve) => setTimeout(resolve, 200));
+    if (i < chunks.length - 1) {
+      await delay(delayMsBetweenRequests);
     }
   }
 
   return embeddings;
-}
-
-/**
- * Cosine similarity between two vectors of equal length.
- * 1 = identical direction, 0 = orthogonal/unrelated, -1 = opposite.
- */
-export function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) {
-    throw new Error(`Vector length mismatch: ${a.length} vs ${b.length}`);
-  }
-
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-
-  if (normA === 0 || normB === 0) return 0;
-
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-/**
- * Ranks stored items by cosine similarity to a query embedding vector and returns top K.
- */
-export function topKByCosineSimilarity<T extends { embedding: number[] }>(
-  queryEmbedding: number[],
-  items: T[],
-  k: number
-): (T & { score: number })[] {
-  if (k <= 0) return [];
-
-  return items
-    .map((item) => ({
-      ...item,
-      score: cosineSimilarity(queryEmbedding, item.embedding),
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, k);
 }
