@@ -1,61 +1,80 @@
-import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
+import { NextResponse } from "next/server";
 import { chunkText } from "@/lib/chunk";
 import { embedBatch } from "@/lib/embeddings";
+import { prisma } from "@/lib/prisma";
 
-// pdf-parse is CommonJS and touches the filesystem on import in some setups -
-// requiring it lazily avoids issues with Next's server bundling.
-async function extractPdfText(buffer: Buffer): Promise<string> {
-  const { PDFParse } = await import("pdf-parse");
-
-  const parser = new PDFParse({ data: buffer });
-
-  try {
-    const result = await parser.getText();
-    return result.text;
-  } finally {
-    await parser.destroy();
-  }
-}
-
+/**
+ * GET /api/documents
+ * Fetches all saved documents from the database.
+ */
 export async function GET() {
-  const documents = await prisma.document.findMany({
-    orderBy: { createdAt: "desc" },
-    select: { id: true, title: true, createdAt: true, _count: { select: { chunks: true, flashcards: true } } },
-  });
-  return NextResponse.json(documents);
+  try {
+    const documents = await prisma.document.findMany({
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        _count: {
+          select: { chunks: true },
+        },
+      },
+    });
+
+    return NextResponse.json(documents);
+  } catch (error: any) {
+    console.error("Failed to fetch documents:", error);
+    return NextResponse.json(
+      { error: error.message || "Failed to fetch documents" },
+      { status: 500 }
+    );
+  }
 }
 
-export async function POST(req: NextRequest) {
-  const formData = await req.formData();
-  const file = formData.get("file") as File | null;
+/**
+ * POST /api/documents
+ * Processes a new document (chunks it, embeds it, and saves it to DB).
+ */
+export async function POST(req: Request) {
+  try {
+    const { title, text } = await req.json();
 
-  if (!file) {
-    return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
-  }
+    if (!text || text.trim().length === 0) {
+      return NextResponse.json({ error: "Document text is empty." }, { status: 400 });
+    }
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const text = file.type === "application/pdf" ? await extractPdfText(buffer) : buffer.toString("utf-8");
+    // 1. Break text into chunks
+    const rawChunks = chunkText(text, 800, 150);
 
-  if (!text || text.trim().length < 20) {
-    return NextResponse.json({ error: "Couldn't extract usable text from this file" }, { status: 400 });
-  }
+    // 2. Generate vector embeddings in safe batches
+    const embeddings = await embedBatch(rawChunks, 10);
 
-  const document = await prisma.document.create({
-    data: { title: file.name },
-  });
+    // 3. Save document and chunks to Prisma
+    const document = await prisma.document.create({
+      data: {
+        title: title || "Untitled PDF",
+        chunks: {
+          createMany: {
+            data: rawChunks.map((content, index) => ({
+              chunkIndex: index,
+              content,
+              embedding: embeddings[index],
+            })),
+          },
+        },
+      },
+    });
 
-  const pieces = chunkText(text);
-  const embeddings = await embedBatch(pieces);
-
-  await prisma.chunk.createMany({
-    data: pieces.map((content, i) => ({
+    return NextResponse.json({
+      success: true,
       documentId: document.id,
-      content,
-      embedding: embeddings[i],
-      chunkIndex: i,
-    })),
-  });
-
-  return NextResponse.json({ documentId: document.id, chunkCount: pieces.length });
+      totalChunks: rawChunks.length,
+    });
+  } catch (error: any) {
+    console.error("Failed to process document:", error);
+    return NextResponse.json(
+      { error: error.message || "Server Error" },
+      { status: 500 }
+    );
+  }
 }
