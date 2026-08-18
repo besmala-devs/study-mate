@@ -6,9 +6,16 @@ import { embedBatch } from "@/lib/embeddings";
 // pdf-parse is CommonJS and touches the filesystem on import in some setups -
 // requiring it lazily avoids issues with Next's server bundling.
 async function extractPdfText(buffer: Buffer): Promise<string> {
-  const pdfParse = (await import("pdf-parse")).default;
-  const data = await pdfParse(buffer);
-  return data.text;
+  const { PDFParse } = await import("pdf-parse");
+
+  const parser = new PDFParse({ data: buffer });
+
+  try {
+    const result = await parser.getText();
+    return result.text;
+  } finally {
+    await parser.destroy();
+  }
 }
 
 export async function GET() {

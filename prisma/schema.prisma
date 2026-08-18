@@ -3,10 +3,10 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
-
 // MVP: single implicit user. Add real auth (NextAuth) once the core flow works.
 model Document {
   id        String    @id @default(cuid())
