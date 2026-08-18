@@ -63,6 +63,9 @@ export async function POST(req: Request) {
       extractedText = buffer.toString("utf-8");
     }
 
+    // 🛠️ STEP 1: Sanitize extracted full text right away
+    extractedText = sanitizeText(extractedText);
+
     if (!extractedText || extractedText.trim().length === 0) {
       return NextResponse.json(
         { error: "Could not extract text. The file may be empty or an image-only PDF." },
@@ -70,8 +73,8 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. Chunk text into overlapping segments
-    const rawChunks = chunkText(extractedText, 1500, 200);
+    // 2. Chunk text into overlapping segments & sanitize each chunk
+    const rawChunks = chunkText(extractedText, 1500, 200).map(sanitizeText); // 🛠️ STEP 2: Ensure chunks are clean
 
     // 3. Generate embeddings in safe batches
     const embeddings = await embedBatch(rawChunks);
