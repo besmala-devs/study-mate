@@ -1,14 +1,15 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Candidate models to test
+// Updated candidate list prioritizing working models
 const CANDIDATE_MODELS = [
   "gemini-embedding-001",
   "text-embedding-004",
   "embedding-001",
+  "text-embedding-001",
 ];
 
 let cachedWorkingModel: string | null = null;
@@ -56,7 +57,7 @@ async function discoverEmbeddingModel(): Promise<string> {
     console.warn("Could not list models dynamically:", err?.message || err);
   }
 
-  return "text-embedding-004";
+  return "gemini-embedding-001";
 }
 
 /**
@@ -85,7 +86,6 @@ export async function embedText(
         return embedText(text, retries - 1, backoffMs * 2);
       }
 
-      // Clear cache on non-429 error and allow fallbacks
       cachedWorkingModel = null;
     }
   }
@@ -132,7 +132,7 @@ export async function embedText(
 }
 
 /**
- * Sequentially embeds chunks with a 700ms delay between requests to stay under rate limits.
+ * Sequentially embeds chunks with a delay between requests to stay under rate limits.
  */
 export async function embedBatch(
   chunks: string[],
@@ -152,4 +152,41 @@ export async function embedBatch(
   }
 
   return embeddings;
+}
+
+/**
+ * Calculates cosine similarity between two numeric vectors.
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0;
+
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+/**
+ * Ranks items by cosine similarity against a query embedding and returns top-K results.
+ */
+export function topKByCosineSimilarity<T extends { embedding: number[] }>(
+  queryEmbedding: number[],
+  items: T[],
+  topK: number = 5
+): (T & { similarity: number })[] {
+  return items
+    .map((item) => ({
+      ...item,
+      similarity: cosineSimilarity(queryEmbedding, item.embedding),
+    }))
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, topK);
 }

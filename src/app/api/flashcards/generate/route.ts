@@ -3,12 +3,14 @@ import { prisma } from "@/lib/db";
 import { generateFlashcards } from "@/lib/ai";
 
 export async function POST(req: NextRequest) {
-  const { documentId, count = 8 } = await req.json();
+  const body = await req.json().catch(() => ({}));
+  const { documentId, count: requestedCount } = body;
 
   if (!documentId) {
     return NextResponse.json({ error: "documentId is required" }, { status: 400 });
   }
 
+  // 1. Fetch ALL chunks in order
   const chunks = await prisma.chunk.findMany({
     where: { documentId },
     orderBy: { chunkIndex: "asc" },
@@ -18,15 +20,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Document has no processed content" }, { status: 404 });
   }
 
-  // For an MVP, feed a representative slice of the document rather than everything -
-  // keeps token usage predictable regardless of document length.
-  const sourceText = chunks
-    .slice(0, 12)
-    .map((c) => c.content)
-    .join("\n\n");
+  // 2. Dynamically calculate flashcard count based on document size if not explicitly specified
+  // Examples: 11 chunks -> ~8 cards | 70 chunks -> ~35 cards
+  const targetCount = requestedCount 
+    ? Number(requestedCount)
+    : Math.min(40, Math.max(6, Math.round(chunks.length * 0.5)));
 
-  const generated = await generateFlashcards(sourceText, count);
+  // 3. Read across the ENTIRE document (no more slicing at 12!)
+  const sourceText = chunks.map((c) => c.content).join("\n\n");
 
+  // 4. Generate the proportional amount of flashcards
+  const generated = await generateFlashcards(sourceText, targetCount);
+
+  // 5. Save generated flashcards in database
   const created = await prisma.$transaction(
     generated.map((card) =>
       prisma.flashcard.create({
@@ -39,5 +45,9 @@ export async function POST(req: NextRequest) {
     )
   );
 
-  return NextResponse.json({ flashcards: created });
+  return NextResponse.json({ 
+    flashcards: created,
+    totalChunks: chunks.length,
+    generatedCount: created.length 
+  });
 }
