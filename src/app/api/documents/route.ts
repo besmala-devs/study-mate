@@ -55,26 +55,43 @@ export async function POST(req: Request) {
     const bytes = await file.arrayBuffer();
 
     if (file.name.toLowerCase().endsWith(".pdf")) {
-      // unpdf accepts Uint8Array directly
-      const { text } = await extractText(new Uint8Array(bytes));
-      extractedText = Array.isArray(text) ? text.join("\n") : text;
+      try {
+        const pdfData = new Uint8Array(bytes);
+        const { text, totalPages } = await extractText(pdfData, { mergePages: true });
+        
+        console.log(`Processing PDF: ${totalPages} pages found.`);
+
+        if (Array.isArray(text)) {
+          extractedText = text.join("\n");
+        } else if (typeof text === "string") {
+          extractedText = text;
+        }
+      } catch (pdfErr: any) {
+        console.error("PDF Parsing Error:", pdfErr);
+      }
     } else {
       const buffer = Buffer.from(bytes);
       extractedText = buffer.toString("utf-8");
     }
 
-    // 🛠️ STEP 1: Sanitize extracted full text right away
-    extractedText = sanitizeText(extractedText);
+    console.log("Raw extracted characters count:", extractedText.length);
+
+    // 🛠️ Sanitize extracted text
+    const cleanText = sanitizeText(extractedText);
+    console.log("Sanitized characters count:", cleanText.length);
+
+    // Fallback: If sanitizeText wiped out text due to strict font encodings, keep printable text
+    extractedText = cleanText.trim().length > 0 ? cleanText : extractedText.replace(/\u0000/g, "");
 
     if (!extractedText || extractedText.trim().length === 0) {
       return NextResponse.json(
-        { error: "Could not extract text. The file may be empty or an image-only PDF." },
+        { error: "Could not extract text. The file may be empty, encrypted, or a scanned image PDF." },
         { status: 400 }
       );
     }
 
-    // 2. Chunk text into overlapping segments & sanitize each chunk
-    const rawChunks = chunkText(extractedText, 1500, 200).map(sanitizeText); // 🛠️ STEP 2: Ensure chunks are clean
+    // 2. Chunk text into overlapping segments
+    const rawChunks = chunkText(extractedText, 1500, 200).map(sanitizeText);
 
     // 3. Generate embeddings in safe batches
     const embeddings = await embedBatch(rawChunks);
