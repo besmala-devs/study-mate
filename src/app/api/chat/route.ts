@@ -4,7 +4,7 @@ import { embedText, topKByCosineSimilarity } from "@/lib/embeddings";
 import { answerFromContext } from "@/lib/ai";
 
 export async function POST(req: NextRequest) {
-  const { documentId, question } = await req.json();
+  const { documentId, question, mode } = await req.json();
 
   if (!documentId || !question) {
     return NextResponse.json({ error: "documentId and question are required" }, { status: 400 });
@@ -21,14 +21,17 @@ export async function POST(req: NextRequest) {
   // 2. Retrieve the most semantically relevant chunks (the "R" in RAG)
   const topMatches = topKByCosineSimilarity(questionEmbedding, chunks, 4);
 
-  // 3. Generate an answer grounded only in those chunks (the "G" in RAG)
+  // 3. Generate an answer. mode "strict" (default) = notes only.
+  //    mode "extended" = notes first, general knowledge clearly labeled after.
   const answer = await answerFromContext(
     question,
-    topMatches.map((m) => m.content)
+    topMatches.map((m) => m.content),
+    mode === "extended" ? "extended" : "strict"
   );
 
   return NextResponse.json({
     answer,
-    sources: topMatches.map((m) => ({ chunkIndex: m.chunkIndex, score: m.score })),
+    mode: mode === "extended" ? "extended" : "strict",
+    sources: topMatches.map((m) => ({ chunkIndex: m.chunkIndex, score: m.similarity })),
   });
 }
