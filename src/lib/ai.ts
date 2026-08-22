@@ -92,15 +92,35 @@ export async function generateFlashcards(
 }
 
 /**
- * Answers questions based ONLY on supplied document context chunks.
+ * Answers a question grounded in retrieved context chunks.
+ *
+ * mode "strict"   - answer ONLY using the provided chunks (pure RAG).
+ *                    States explicitly if the chunks don't cover it.
+ * mode "extended" - answers from the chunks first, then may add general
+ *                    knowledge for anything not covered - clearly labeled
+ *                    under "Beyond your notes:" so the student always knows
+ *                    what's verified against their material vs. not.
  */
 export async function answerFromContext(
-  context: string,
-  question: string
+  question: string,
+  contextChunks: string[],
+  mode: "strict" | "extended" = "strict"
 ): Promise<string> {
+  const context = contextChunks
+    .map((c, i) => `[Excerpt ${i + 1}]\n${c}`)
+    .join("\n\n");
+
   const systemInstruction =
-    "You are a helpful study assistant. Answer the user's question accurately using ONLY the provided context material. " +
-    "If the answer cannot be found in the context, explicitly state that the material does not contain enough information.";
+    mode === "strict"
+      ? "You are a helpful study assistant. Answer the user's question accurately using ONLY the " +
+        "provided context material. If the answer cannot be found in the context, explicitly state " +
+        "that the material does not contain enough information."
+      : "You are a helpful study assistant. Answer the user's question primarily using the provided " +
+        "context material - treat it as the source of truth for anything it covers. If the question " +
+        "goes beyond what the context contains, you may add general knowledge to give a fuller answer, " +
+        "but you MUST clearly separate the two: answer from the context first, then add a section " +
+        "starting with '**Beyond your notes:**' for anything not grounded in the context. Never blend " +
+        "the two without that label.";
 
   const prompt = `Context material:\n${context}\n\nQuestion: ${question}`;
 
