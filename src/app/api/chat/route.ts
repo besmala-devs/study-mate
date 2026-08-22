@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 import { embedText, topKByCosineSimilarity } from "@/lib/embeddings";
 import { answerFromContext } from "@/lib/ai";
 

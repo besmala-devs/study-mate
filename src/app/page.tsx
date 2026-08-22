@@ -22,6 +22,7 @@ export default function Home() {
   const [chatByDoc, setChatByDoc] = useState<Record<string, ChatMessage[]>>({});
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
+  const [extendedMode, setExtendedMode] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Due-today study queue (spaced repetition, across all documents)
@@ -99,7 +100,11 @@ export default function Home() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ documentId: docId, question: userMessage.content }),
+      body: JSON.stringify({
+        documentId: docId,
+        question: userMessage.content,
+        mode: extendedMode ? "extended" : "strict",
+      }),
     });
     const data = await res.json();
     const assistantMessage: ChatMessage = {
@@ -209,9 +214,30 @@ export default function Home() {
               </button>
             )}
           </div>
-          <p className="mt-1 text-sm text-ink/60">
-            Answers are grounded only in {activeDoc ? `"${activeDoc.title}"` : "the selected document"}, not general knowledge.
-          </p>
+
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              onClick={() => setExtendedMode((v) => !v)}
+              role="switch"
+              aria-checked={extendedMode}
+              className={`relative h-5 w-9 rounded-full transition ${
+                extendedMode ? "bg-accent" : "bg-ink/20"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition ${
+                  extendedMode ? "left-4" : "left-0.5"
+                }`}
+              />
+            </button>
+            <p className="text-sm text-ink/60">
+              {extendedMode ? (
+                <>Notes + general knowledge — anything beyond {activeDoc ? `"${activeDoc.title}"` : "your notes"} is clearly labeled.</>
+              ) : (
+                <>Grounded only in {activeDoc ? `"${activeDoc.title}"` : "the selected document"} — nothing else.</>
+              )}
+            </p>
+          </div>
 
           <div className="mt-4 h-72 space-y-3 overflow-y-auto rounded-md border border-ink/10 bg-paper p-3">
             {messages.length === 0 && (
