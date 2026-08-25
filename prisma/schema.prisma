@@ -8,12 +8,28 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 // MVP: single implicit user. Add real auth (NextAuth) once the core flow works.
+
+// A named group of documents (e.g. a subject, a course, an exam) - purely
+// organizational, optional. Deleting a collection does NOT delete its
+// documents, just ungroups them (see onDelete: SetNull below).
+model Collection {
+  id        String     @id @default(cuid())
+  name      String
+  createdAt DateTime   @default(now())
+  documents Document[]
+}
+
 model Document {
   id        String    @id @default(cuid())
   title     String
   createdAt DateTime  @default(now())
   chunks    Chunk[]
   flashcards Flashcard[]
+
+  collectionId String?
+  collection   Collection? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+
+  @@index([collectionId])
 }
 
 // A chunk of a document's text, plus its embedding vector for RAG retrieval.
