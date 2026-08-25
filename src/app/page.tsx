@@ -4,7 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-type Doc = { id: string; title: string; _count: { chunks: number; flashcards: number } };
+type Collection = { id: string; name: string; _count: { documents: number } };
+type Doc = {
+  id: string;
+  title: string;
+  collectionId: string | null;
+  collection: { id: string; name: string } | null;
+  _count: { chunks: number; flashcards: number };
+};
 type DueCard = { id: string; question: string; answer: string; document: { title: string } };
 type DocFlashcard = { id: string; question: string; answer: string; repetition: number; dueAt: string };
 type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -14,6 +21,13 @@ export default function Home() {
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [generating, setGenerating] = useState(false);
+
+  // Collections (groups of documents - e.g. one per subject/exam)
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [collectionFilter, setCollectionFilter] = useState<"all" | "none" | string>("all");
+  const [uploadCollectionId, setUploadCollectionId] = useState<string>("");
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [creatingCollection, setCreatingCollection] = useState(false);
 
   // Chat is a running thread per document, not a single overwritten answer.
   // Kept purely client-side for now - each request still only sends the
@@ -38,9 +52,15 @@ export default function Home() {
 
   const messages = activeDocId ? chatByDoc[activeDocId] ?? [] : [];
 
-  async function loadDocs() {
-    const res = await fetch("/api/documents");
+  async function loadDocs(filter: "all" | "none" | string = collectionFilter) {
+    const qs = filter === "all" ? "" : `?collectionId=${filter}`;
+    const res = await fetch(`/api/documents${qs}`);
     setDocs(await res.json());
+  }
+
+  async function loadCollections() {
+    const res = await fetch("/api/collections");
+    setCollections(await res.json());
   }
 
   async function loadDue() {
@@ -60,8 +80,13 @@ export default function Home() {
 
   useEffect(() => {
     loadDocs();
+    loadCollections();
     loadDue();
   }, []);
+
+  useEffect(() => {
+    loadDocs(collectionFilter);
+  }, [collectionFilter]);
 
   useEffect(() => {
     if (activeDocId && flashcardsView === "browse") {
@@ -79,13 +104,40 @@ export default function Home() {
     setUploading(true);
     const formData = new FormData();
     formData.append("file", file);
+    if (uploadCollectionId) formData.append("collectionId", uploadCollectionId);
     const res = await fetch("/api/documents", { method: "POST", body: formData });
     const data = await res.json();
     setUploading(false);
     if (data.documentId) {
       setActiveDocId(data.documentId);
       loadDocs();
+      loadCollections();
     }
+  }
+
+  async function handleCreateCollection() {
+    if (!newCollectionName.trim()) return;
+    setCreatingCollection(true);
+    const res = await fetch("/api/collections", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newCollectionName.trim() }),
+    });
+    const created = await res.json();
+    setNewCollectionName("");
+    setCreatingCollection(false);
+    await loadCollections();
+    setUploadCollectionId(created.id);
+  }
+
+  async function handleMoveDocument(docId: string, collectionId: string) {
+    await fetch(`/api/documents/${docId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ collectionId: collectionId || null }),
+    });
+    loadDocs(collectionFilter);
+    loadCollections();
   }
 
   async function handleAsk() {
@@ -129,7 +181,7 @@ export default function Home() {
       body: JSON.stringify({ documentId: activeDocId, count: 8 }),
     });
     setGenerating(false);
-    loadDocs();
+    loadDocs(collectionFilter);
     loadDue();
     if (flashcardsView === "browse") loadDocFlashcards(activeDocId);
   }
@@ -165,14 +217,78 @@ export default function Home() {
         {/* Upload + document list */}
         <section className="rounded-lg border border-ink/10 bg-white/60 p-6">
           <h2 className="font-display text-lg font-semibold">1. Add material</h2>
+
+          {/* Collection filter tabs */}
+          <div className="mt-4 flex flex-wrap gap-1.5">
+            <button
+              onClick={() => setCollectionFilter("all")}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                collectionFilter === "all" ? "bg-ink text-white" : "bg-ink/5 text-ink/60 hover:bg-ink/10"
+              }`}
+            >
+              All
+            </button>
+            {collections.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setCollectionFilter(c.id)}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                  collectionFilter === c.id ? "bg-ink text-white" : "bg-ink/5 text-ink/60 hover:bg-ink/10"
+                }`}
+              >
+                {c.name} ({c._count.documents})
+              </button>
+            ))}
+            <button
+              onClick={() => setCollectionFilter("none")}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                collectionFilter === "none" ? "bg-ink text-white" : "bg-ink/5 text-ink/60 hover:bg-ink/10"
+              }`}
+            >
+              Ungrouped
+            </button>
+          </div>
+
+          {/* New collection */}
+          <div className="mt-3 flex gap-1.5">
+            <input
+              value={newCollectionName}
+              onChange={(e) => setNewCollectionName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleCreateCollection()}
+              placeholder="New group, e.g. Thermodynamics"
+              className="flex-1 rounded-md border border-ink/15 bg-white px-2 py-1 text-xs outline-none focus:border-accent"
+            />
+            <button
+              onClick={handleCreateCollection}
+              disabled={creatingCollection || !newCollectionName.trim()}
+              className="rounded-md border border-ink/15 px-2 py-1 text-xs font-medium hover:bg-ink/5 disabled:opacity-50"
+            >
+              +
+            </button>
+          </div>
+
           <label className="mt-4 block cursor-pointer rounded-md border border-dashed border-accent/40 bg-accentSoft px-4 py-6 text-center text-sm text-accent transition hover:bg-accentSoft/70">
             {uploading ? "Processing…" : "Upload a PDF or .txt file"}
             <input type="file" accept=".pdf,.txt" className="hidden" onChange={handleUpload} />
           </label>
 
+          {/* Which group the next upload goes into */}
+          <select
+            value={uploadCollectionId}
+            onChange={(e) => setUploadCollectionId(e.target.value)}
+            className="mt-2 w-full rounded-md border border-ink/15 bg-white px-2 py-1.5 text-xs outline-none focus:border-accent"
+          >
+            <option value="">Upload as ungrouped</option>
+            {collections.map((c) => (
+              <option key={c.id} value={c.id}>
+                Upload into "{c.name}"
+              </option>
+            ))}
+          </select>
+
           <ul className="mt-6 space-y-2">
             {docs.map((d) => (
-              <li key={d.id}>
+              <li key={d.id} className="space-y-1">
                 <button
                   onClick={() => setActiveDocId(d.id)}
                   className={`w-full rounded-md border px-3 py-2 text-left text-sm transition ${
@@ -184,10 +300,28 @@ export default function Home() {
                   <div className="truncate font-medium">{d.title}</div>
                   <div className="font-mono text-xs text-ink/50">
                     {d._count.chunks} chunks · {d._count.flashcards} cards
+                    {d.collection && ` · ${d.collection.name}`}
                   </div>
                 </button>
+                <select
+                  value={d.collectionId ?? ""}
+                  onChange={(e) => handleMoveDocument(d.id, e.target.value)}
+                  className="w-full rounded-md border border-ink/10 bg-white px-2 py-1 text-[11px] text-ink/60 outline-none focus:border-accent"
+                >
+                  <option value="">Ungrouped</option>
+                  {collections.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
               </li>
             ))}
+            {docs.length === 0 && (
+              <p className="rounded-md border border-dashed border-ink/15 p-4 text-center text-xs text-ink/40">
+                No documents in this view yet.
+              </p>
+            )}
           </ul>
 
           {activeDocId && (
