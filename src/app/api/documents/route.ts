@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { extractText } from "unpdf";
 import { chunkText } from "@/lib/chunk";
 import { embedBatch } from "@/lib/embeddings";
@@ -13,15 +13,29 @@ function sanitizeText(text: string): string {
 
 /**
  * GET /api/documents
+ * Optional ?collectionId=xxx to filter to one collection.
+ * Optional ?collectionId=none to get only ungrouped documents.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const collectionId = req.nextUrl.searchParams.get("collectionId");
+
+    const where =
+      collectionId === "none"
+        ? { collectionId: null }
+        : collectionId
+        ? { collectionId }
+        : {};
+
     const documents = await prisma.document.findMany({
+      where,
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
         title: true,
         createdAt: true,
+        collectionId: true,
+        collection: { select: { id: true, name: true } },
         _count: {
           select: { chunks: true, flashcards: true },
         },
@@ -37,11 +51,16 @@ export async function GET() {
 
 /**
  * POST /api/documents
+ * Accepts an optional "collectionId" field in the form data to file the
+ * upload directly into a group. Omit it (or "") to leave it ungrouped.
  */
 export async function POST(req: Request) {
   try {
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
+    const collectionIdRaw = formData.get("collectionId");
+    const collectionId =
+      typeof collectionIdRaw === "string" && collectionIdRaw.trim() ? collectionIdRaw : null;
 
     if (!file) {
       return NextResponse.json(
@@ -100,6 +119,7 @@ export async function POST(req: Request) {
     const document = await prisma.document.create({
       data: {
         title: file.name,
+        collectionId,
         chunks: {
           createMany: {
             data: rawChunks.map((content, index) => ({
