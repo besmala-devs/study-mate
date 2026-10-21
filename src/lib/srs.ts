@@ -28,8 +28,9 @@ export function scheduleNext(
     easeFactor + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
   );
 
-  const dueAt = new Date();
-  dueAt.setDate(dueAt.getDate() + intervalDays);
+    const dueAt = new Date();
+    dueAt.setDate(dueAt.getDate() + intervalDays);
+    dueAt.setHours(0, 0, 0, 0); // due from the start of that day
 
   return { repetition, easeFactor, intervalDays, dueAt };
 }
