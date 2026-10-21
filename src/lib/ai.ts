@@ -7,8 +7,8 @@ if (!apiKey) {
 
 const ai = new GoogleGenAI({ apiKey });
 
-// Models are tried in this order. If one doesn't exist (404), the next is used.
-const MODELS_TO_TRY = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-pro"];
+// Use gemini-flash-latest to safely target active models automatically
+const MODELS_TO_TRY = ["gemini-flash-latest", "gemini-2.0-flash"];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -29,7 +29,7 @@ async function generateContentWithFallback(
 
   for (const modelName of MODELS_TO_TRY) {
     let attemptsLeft = 3;
-    let delay = 1000;
+    let delay = 3000;
 
     while (attemptsLeft > 0) {
       attemptsLeft--; // <-- counted on EVERY attempt (this fixes the infinite loop)
